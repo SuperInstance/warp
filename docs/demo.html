@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>warp platform — effects wait for evidence</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --fg:#c9d1d9; --green:#3fb950;
+          --red:#f85149; --yellow:#e3b341; --blue:#58a6ff; --violet:#bc8cff; }
+  * { box-sizing:border-box; }
+  body { background:var(--bg); color:var(--fg); font:15px/1.55 ui-monospace,Menlo,Consolas,monospace;
+         margin:0; padding:32px clamp(16px,6vw,72px); }
+  h1 { font-size:22px; color:#fff; } h2 { font-size:14px; color:var(--yellow);
+       letter-spacing:.08em; text-transform:uppercase; margin-top:38px; }
+  .sub { color:#8b949e; max-width:74ch; }
+  .term { background:var(--panel); border:1px solid #30363d; border-radius:10px;
+          padding:14px 16px; margin:16px 0; box-shadow:0 8px 24px rgba(0,0,0,.4); }
+  .bar { display:flex; gap:6px; margin-bottom:10px; }
+  .bar i { width:11px; height:11px; border-radius:50%; }
+  .bar i:nth-child(1){background:#ff5f57}.bar i:nth-child(2){background:#febc2e}.bar i:nth-child(3){background:#28c840}
+  .ln { white-space:pre-wrap; word-break:break-all; min-height:1.4em; }
+  .ok{color:var(--green)} .bad{color:var(--red)} .y{color:var(--yellow)}
+  .b{color:var(--blue)} .v{color:var(--violet)} .dim{color:#8b949e}
+  .controls{display:flex; gap:12px; margin:14px 0; flex-wrap:wrap;}
+  button { background:#21262d; color:var(--fg); border:1px solid #30363d; border-radius:8px;
+           padding:10px 16px; font:inherit; cursor:pointer; }
+  button:hover{border-color:var(--blue);}
+  .stage { display:flex; gap:14px; align-items:stretch; flex-wrap:wrap; margin:10px 0; }
+  .agent { flex:1 1 220px; background:var(--panel); border:1px solid #30363d; border-radius:10px; padding:12px 14px; }
+  .agent h3 { margin:0 0 6px; font-size:13px; color:var(--blue); }
+  .fx { border:1px dashed #30363d; border-radius:8px; padding:10px 12px; margin:8px 0; font-size:13.5px;
+        transition:opacity .4s, border-color .4s; }
+  .fx.held { opacity:.55; } .fx.released { border-color:var(--green); opacity:1; }
+  .fx.vetoed { border-color:var(--red); opacity:.75; }
+  .badge { float:right; font-size:11.5px; padding:1px 8px; border-radius:10px; }
+  .badge.held{ background:#2d1416; color:var(--red);} .badge.released{ background:#12261b; color:var(--green);}
+  .warp { display:flex; gap:3px; flex-wrap:wrap; margin-top:6px; }
+  .warp i { width:14px; height:14px; border-radius:3px; background:#21262d; }
+  .warp i.a{ background:var(--green);} .warp i.r{ background:var(--red);} .warp i.s{ background:#484f58;}
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; }
+  .card { background:var(--panel); border:1px solid #30363d; border-radius:10px; padding:14px 16px; }
+  .card code{color:var(--yellow);} .card p{color:#8b949e; font-size:13.5px; margin:.5em 0 0;}
+  @keyframes shake {0%,100%{transform:translateX(0)}25%{transform:translateX(-4px)}75%{transform:translateX(4px)}}
+  .shake{ animation:shake .3s ease; }
+</style>
+</head>
+<body>
+
+<h1>warp platform <span class="v">— effects wait for evidence</span></h1>
+<p class="sub">An agent proposes an effect. The effect does not run. A
+warp of 32 voters ballots (the <code>quilt_vote</code> plugin — two-pass
+ternary vote, ported from <code>warp-vote-consensus</code>). Only a
+<b>passed</b> verdict releases the effect — a veto or a missing ballot
+holds it forever. Click the ballots. Watch the gate read the verdict.</p>
+
+<h2>▶ The gate, live</h2>
+<div class="stage" id="stage"></div>
+<div class="controls">
+  <button onclick="runAll(21,3)">ballot: 21 agree / 3 reject → A releases</button>
+  <button onclick="runAll(9,20)">ballot: 9 agree / 20 reject → A vetoed</button>
+  <button onclick="runAll(12,4,true)">no quorum (12/4) → A held</button>
+</div>
+<div class="term">
+  <div class="bar"><i></i><i></i><i></i></div>
+  <div class="ln dim"># session WAL (receipts/session-demo.jsonl)</div>
+  <div id="wal"></div>
+</div>
+
+<h2>▶ What the platform core is</h2>
+<div class="grid">
+  <div class="card"><code>Registry</code><p>Loads plugins against a manifest
+    (name/version/capabilities). Overclaims are NAMED refusals, never silent.
+    Every load and call is receipted with content hashes.</p></div>
+  <div class="card"><code>Session</code><p>Agent proposals append to a WAL.
+    Effects are held until evidence is durable <i>and the verdict passes</i>.
+    Evidence-present is necessary, never sufficient.</p></div>
+  <div class="card"><code>verify()</code><p>Offline re-derivation: replay the
+    WAL's recorded args through the plugin; any verdict that doesn't
+    re-derive is flagged — the wal_ref-substitution defense.</p></div>
+  <div class="card"><code>quilt_vote</code><p>Demo plugin: 2-bit ternary
+    ballot (Reject 0b00 / Abstain 0b01 / Agree 0b10), two passes, warp=32.
+    Deterministic; pure python. One warp = one ballot.</p></div>
+</div>
+
+<h2>▶ Why this is the rebuild</h2>
+<p class="sub">The old monolith tried to be the whole environment. The
+platform bet is the fleet bet: <b>thin host, plugin constellation, receipts
+everywhere</b>. warp-vote, ternary-warp, flux, cudaclaw, holodeck, the room
+family — each becomes a manifest + capabilities + pins, loaded into this
+host. <code>CONSTELLATION.md</code> maps all 14. The ah-ha is above:
+you just watched a veto <i>stop an agent from acting</i>, in 32 pixels,
+offline-reproducible.</p>
+
+<script>
+const $=id=>document.getElementById(id);
+const AGENTS=[
+ {id:"agent-a", fx:"write: platform/README.md", color:"a"},
+ {id:"agent-b", fx:"push: main   (no evidence ever offered)", color:"none"},
+ {id:"agent-c", fx:"delete: platform/  (vetoed ballot)", color:"r"},
+];
+function build(){
+  $("stage").innerHTML = AGENTS.map(a=>`
+   <div class="agent" id="card-${a.id}">
+     <h3>${a.id}</h3>
+     <div class="fx held" id="fx-${a.id}"><span class="badge held" id="bd-${a.id}">HELD</span>
+       <span class="dim">effect:</span> ${a.fx}</div>
+     <div class="dim" style="font-size:12px">warp of 32:</div>
+     <div class="warp" id="warp-${a.id}">${"<i></i>".repeat(32)}</div>
+   </div>`).join("");
+  $("wal").innerHTML="";
+}
+function paintWarp(which, agree, reject){
+  const cells=[...$("warp-"+which).children];
+  cells.forEach((c,i)=>{ c.className = i<agree ? "a" : i<agree+reject ? "r" : "s"; });
+}
+function walRow(agent, state, note){
+  const d=document.createElement("div"); d.className="ln";
+  d.innerHTML=`<span class="y">${(Math.random()*1e16|0).toString(16).padStart(16,"0")}</span>`
+    +`  <span class="b">${agent}</span> → <span class="${state==="released"?"ok":state==="vetoed"?"bad":"dim"}">${state.toUpperCase()}</span>`
+    +`  <span class="dim">${note}</span>`;
+  $("wal").appendChild(d);
+}
+function setFx(which, state, reason){
+  const fx=$("fx-"+which), bd=$("bd-"+which);
+  fx.className="fx "+(state==="released"?"released":state==="vetoed"?"vetoed":"held");
+  bd.className="badge "+(state==="released"?"released":"held");
+  bd.textContent = state==="released"?"RELEASED":state==="vetoed"?"VETOED":"HELD";
+  if(state!=="released"){ fx.classList.add("shake"); setTimeout(()=>fx.classList.remove("shake"),350); }
+}
+function runAll(agree, reject, quiet){
+  // agent-a gets the fresh ballot; c stays vetoed from its ballot; b stays held
+  paintWarp("agent-a", agree, reject);
+  if(agree>=17 && reject<16){ setFx("agent-a","released"); walRow("agent-a","released","tally: agree="+agree+" reject="+reject+" → passed"); }
+  else if(reject>=16){ setFx("agent-a","vetoed"); walRow("agent-a","vetoed","tally: reject="+reject+" ≥ 16 → vetoed — effect held"); }
+  else { setFx("agent-a","held"); walRow("agent-a","held","no_quorum — effect held"); }
+}
+build();
+paintWarp("agent-c", 10, 20);
+setTimeout(()=>{ paintWarp("agent-a",21,3); setFx("agent-a","released");
+  walRow("agent-a","released","tally: 21/3 → passed — evidence durable, verdict read"); },600);
+setTimeout(()=>{ walRow("agent-b","held","no evidence_call — held forever"); },1100);
+setTimeout(()=>{ walRow("agent-c","vetoed","tally: 10/20 → vetoed — the gate reads the verdict, not the receipt"); },1600);
+</script>
+</body>
+</html>
